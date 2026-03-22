@@ -472,9 +472,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
     <div class="modal-handle"></div>
     <div id="modal-detail-content"></div>
     <div style="padding:0 16px 12px">
-      <button onclick="addTaskToCalendar()" style="width:100%;padding:11px;background:#1D9E75;color:white;border:none;border-radius:10px;font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
-        📅 เพิ่มใน Google Calendar (แจ้งเตือน 2 ครั้ง)
-      </button>
+      <div id="cal-btn-wrap"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-detail')">ปิด</button>
@@ -503,6 +501,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
     <div class="field">
       <label>รหัสผ่าน</label>
       <input type="text" id="staff-pass" placeholder="รหัสผ่านสำหรับล็อกอิน" value="1234">
+    </div>
+    <div class="field">
+      <label>อีเมลสำหรับรับแจ้งเตือน Deadline</label>
+      <input type="email" id="staff-email" placeholder="เช่น name@gmail.com">
     </div>
     <div class="field">
       <label>สีประจำตัว</label>
@@ -563,7 +565,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 // ═══════════════════════════════════════
 // DATA & STATE
 // ═══════════════════════════════════════
-const STORAGE_KEY  = 'hanheng_mt_v2';
+const STORAGE_KEY_GLOBAL = 'hanheng_mt_global_v3';
+const STORAGE_KEY_EMP   = 'hanheng_mt_employees_v3';
+
+function getUserKey() {
+  const u = state.currentUser;
+  if (!u) return STORAGE_KEY_GLOBAL;
+  if (u.role === 'manager') return 'hanheng_mt_mgr_v3';
+  return 'hanheng_mt_user_' + u.id + '_v3';
+}
 let   SCRIPT_URL   = localStorage.getItem('hh_script_url') || '';
 let state = {
   currentUser: null,
@@ -576,25 +586,63 @@ let state = {
 
 function loadState() {
   try {
-    const s = localStorage.getItem(STORAGE_KEY);
+    // โหลด employees จาก local (global shared)
+    const ge = localStorage.getItem(STORAGE_KEY_EMP);
+    if (ge) { const gd = JSON.parse(ge); if (gd.employees) state.employees = gd.employees; }
+    if (!state.employees || !state.employees.length) state.employees = [];
+    // โหลด tasks/morningTalks จาก user key (local cache)
+    const uKey = getUserKey();
+    const s = localStorage.getItem(uKey);
     if (s) {
       const saved = JSON.parse(s);
-      state = {...state, ...saved};
-      if (!state.employees) state.employees = [];
+      if (saved.tasks)        state.tasks        = saved.tasks        || [];
+      if (saved.morningTalks) state.morningTalks = saved.morningTalks || [];
     }
   } catch(e) { console.error('loadState error:', e); }
 }
-function saveState() {
+
+// โหลดจาก Google Sheet (ถ้ามี URL) — เรียกหลัง login
+async function loadFromSheet() {
+  if (!SCRIPT_URL) return;
   try {
-    const s = {
-      tasks: state.tasks,
-      morningTalks: state.morningTalks,
-      employees: state.employees,
-      editTaskId: state.editTaskId,
-      editStaffId: state.editStaffId
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    showToast('⏳ กำลังโหลดข้อมูลจาก Server...');
+    const u = state.currentUser;
+    const params = new URLSearchParams({ action: 'getTasks', userId: u.id, role: u.role });
+    const r = await fetch(SCRIPT_URL + '?' + params);
+    const d = await r.json();
+    if (d.ok && d.tasks) {
+      state.tasks = d.tasks;
+      saveStateLocal();
+      renderAll();
+      showToast('✅ โหลดข้อมูลสำเร็จ (' + d.tasks.length + ' งาน)');
+    }
+    // โหลด employees ด้วย
+    const re = await fetch(SCRIPT_URL + '?action=getEmployees');
+    const de = await re.json();
+    if (de.ok && de.employees) {
+      state.employees = de.employees;
+      saveEmployeesLocal();
+      refreshLoginDropdown();
+      refreshOwnerDropdowns();
+    }
+  } catch(e) { console.warn('loadFromSheet error:', e.message); }
+}
+function saveState() {
+  saveStateLocal();
+}
+
+function saveStateLocal() {
+  try {
+    saveEmployeesLocal();
+    const uKey = getUserKey();
+    localStorage.setItem(uKey, JSON.stringify({ tasks: state.tasks, morningTalks: state.morningTalks }));
   } catch(e) { console.error('saveState error:', e); }
+}
+
+function saveEmployeesLocal() {
+  try {
+    localStorage.setItem(STORAGE_KEY_EMP, JSON.stringify({ employees: state.employees }));
+  } catch(e) {}
 }
 
 // ═══════════════════════════════════════
@@ -604,11 +652,11 @@ function seedData() {
   // เติม employees เสมอถ้ายังไม่มี (ไม่ขึ้นกับ tasks)
   if (!state.employees || !state.employees.length) {
     state.employees = [
-      { id: 1, name: 'ผู้จัดการ', role: 'manager', pass: '1234', color: '#C84B2F' },
-      { id: 2, name: 'ไอซ์',      role: 'staff',   pass: '1234', color: '#1A5FA8' },
-      { id: 3, name: 'เนตร',      role: 'staff',   pass: '1234', color: '#2D7A4F' },
-      { id: 4, name: 'ตาล',       role: 'staff',   pass: '1234', color: '#B5600E' },
-      { id: 5, name: 'มุก',       role: 'staff',   pass: '1234', color: '#8B5CF6' },
+      { id: 1, name: 'ผู้จัดการ', role: 'manager', pass: '1234', color: '#C84B2F', email: '' },
+      { id: 2, name: 'ไอซ์',      role: 'staff',   pass: '1234', color: '#1A5FA8', email: '' },
+      { id: 3, name: 'เนตร',      role: 'staff',   pass: '1234', color: '#2D7A4F', email: '' },
+      { id: 4, name: 'ตาล',       role: 'staff',   pass: '1234', color: '#B5600E', email: '' },
+      { id: 5, name: 'มุก',       role: 'staff',   pass: '1234', color: '#8B5CF6', email: '' },
     ];
   }
   if (state.tasks.length > 0) return;
@@ -616,20 +664,8 @@ function seedData() {
   const fmt = d => d.toISOString().split('T')[0];
   const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x; };
 
-  state.tasks = [
-    { id: 1, name: 'ติดตามงานค้าง', group: 'หน้าร้าน', owner: 'ทุกคน', start: fmt(today), due: fmt(addDays(today,2)), remind: 1, status: 'กำลังดำเนินการ', pct: 100, checklist: ['ตรวจรายการค้าง','ติดต่อลูกค้า','บันทึกผล'].map(t=>({t,done:true})), notes: 'ดำเนินการเสร็จสิ้น' },
-    { id: 2, name: 'จัดทำไฟล์วางบิล คุณชินดี้', group: 'Back office', owner: 'เนตร', start: fmt(today), due: fmt(addDays(today,1)), remind: 1, status: 'กำลังดำเนินการ', pct: 100, checklist: ['รวบรวมใบแจ้งหนี้','จัดทำไฟล์','ส่งลูกค้า'].map(t=>({t,done:true})), notes: '' },
-    { id: 3, name: 'จัดทำไฟล์วางบิล คุณคีวฯ อัพเดท ล็อตที่3', group: 'Back office', owner: 'เนตร', start: fmt(today), due: fmt(addDays(today,3)), remind: 1, status: 'กำลังดำเนินการ', pct: 25, checklist: ['รวบรวมข้อมูล','จัดทำไฟล์','ตรวจสอบ','ส่ง'].map(t=>({t,done:false})), notes: 'กำลังดำเนินการ' },
-    { id: 4, name: 'ปันทึกรายจ่าย-รายรับ/เตรียมเอกสารส่ง สนง บัญชี', group: 'Back office', owner: 'เนตร', start: fmt(addDays(today,-2)), due: fmt(addDays(today,0)), remind: 1, status: 'กำลังดำเนินการ', pct: 50, checklist: ['รวบรวมเอกสาร','ตรวจสอบยอด','จัดทำสรุป','ส่งสำนักงานบัญชี'].map(t=>({t,done:t==='รวบรวมเอกสาร'})), notes: '' },
-    { id: 5, name: 'สั่งของด้าย', group: 'งานตัด', owner: 'ไอซ์', start: fmt(today), due: fmt(addDays(today,1)), remind: 1, status: 'เสร็จแล้ว', pct: 100, checklist: ['เช็คสต๊อก','สั่งซื้อ','รับของ'].map(t=>({t,done:true})), notes: '' },
-    { id: 6, name: 'บานอสังสโตน M', group: 'งานตัด', owner: 'ไอซ์', start: fmt(today), due: fmt(addDays(today,4)), remind: 1, status: 'ยังไม่เริ่ม', pct: 0, checklist: ['วัดไซส์','ตัดผ้า','เย็บ','QC'].map(t=>({t,done:false})), notes: 'วางแผน/ดำเนินการต่อไป' },
-    { id: 7, name: 'ส่งต่องานค้างของแต่ละสาขา', group: 'หน้าร้าน', owner: 'ตาล', start: fmt(addDays(today,-1)), due: fmt(today), remind: 1, status: 'เสร็จแล้ว', pct: 100, checklist: ['รวบรวมรายการ','ส่งต่อ','ยืนยัน'].map(t=>({t,done:true})), notes: '' },
-  ];
-
-  state.morningTalks = [
-    { id: 1, date: fmt(today), branch: 'Online', topic: 'ติดตามยอดขาย', progress: '100%', owner: 'ผู้จัดการ', note: 'ยอดดีขึ้น' },
-    { id: 2, date: fmt(today), branch: 'O.X.', topic: 'ตรวจสต๊อก', progress: '75%', owner: 'ไอซ์', note: 'รอของเพิ่ม' },
-  ];
+  state.tasks = [];
+  state.morningTalks = [];
 
 }
 
@@ -703,7 +739,10 @@ function initMain() {
   const avatarEl = document.getElementById('header-avatar');
   if (avatarEl) { avatarEl.textContent = state.currentUser.display.charAt(0); avatarEl.style.background = state.currentUser.color || 'rgba(255,255,255,0.2)'; }
   document.getElementById('mt-date-label').textContent = `ประจำวันที่ ${thaiDate(today())}`;
+  // โหลดข้อมูล local ก่อน แล้วโหลดจาก Sheet (ถ้ามี URL)
+  loadState();
   renderAll();
+  if (SCRIPT_URL) loadFromSheet();
 }
 
 function renderAll() {
@@ -773,12 +812,18 @@ function renderDashboard() {
   }
 
   const mtHTML = todayMTs.length ? todayMTs.map(m => `
-    <div style="padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:14px;font-weight:600">${m.topic}</span>
-        <span class="task-badge ${m.progress==='100%'?'badge-green':'badge-amber'}">${m.progress}</span>
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:var(--text)">${m.topic}</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:2px">${m.branch} · ${m.owner}${m.note?' · '+m.note:''}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <span class="task-badge ${m.progress==='100%'?'badge-green':'badge-amber'}">${m.progress}</span>
+          <button onclick="openEditMT(${m.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;color:var(--text2)">✏️</button>
+          <button onclick="deleteMT(${m.id})" style="background:var(--red-bg);border:1px solid var(--red);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;color:var(--red)">🗑</button>
+        </div>
       </div>
-      <div style="font-size:12px;color:var(--text3);margin-top:2px">${m.branch} · ${m.owner}${m.note?' · '+m.note:''}</div>
     </div>`).join('') : '<div style="font-size:13px;color:var(--text3);padding:8px 0">ยังไม่มีการบันทึก Morning Talk วันนี้</div>';
 
   mtList.innerHTML = carryHTML + mtHTML;
@@ -920,6 +965,18 @@ function openTaskDetail(id) {
     ${t.notes ? `<div style="padding:12px 16px;font-size:13px;color:var(--text2);background:var(--surface2)">📝 ${t.notes}</div>` : ''}
   `;
   openModal('modal-detail');
+  // render ปุ่ม calendar พร้อมแสดง email เจ้าของงาน
+  const emp = state.employees.find(e => e.name === t.owner);
+  const empEmail = emp?.email || '';
+  const calWrap = document.getElementById('cal-btn-wrap');
+  if (calWrap) {
+    calWrap.innerHTML = `
+      <button onclick="addTaskToCalendar()" style="width:100%;padding:11px;background:#1D9E75;color:white;border:none;border-radius:10px;font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+        📅 เพิ่มใน Google Calendar ของ ${t.owner}
+      </button>
+      ${empEmail ? `<div style="text-align:center;font-size:12px;color:var(--text3);margin-top:5px">📧 ${empEmail}</div>` : '<div style="text-align:center;font-size:12px;color:var(--amber);margin-top:5px">⚠️ ยังไม่มีอีเมล — เพิ่มได้ที่แท็บ 👤 พนักงาน</div>'}
+    `;
+  }
 }
 
 function toggleChecklist(taskId, idx) {
@@ -1027,6 +1084,9 @@ function saveTask() {
 // MORNING TALK
 // ═══════════════════════════════════════
 function openAddMT() {
+  state._editMTId = null;
+  const titleEl = document.querySelector('#modal-mt .modal-title');
+  if (titleEl) titleEl.textContent = 'บันทึก Morning Talk';
   document.getElementById('mt-date').value = today();
   document.getElementById('mt-topic').value = '';
   document.getElementById('mt-prog').value = '100%';
@@ -1037,8 +1097,25 @@ function openAddMT() {
 function saveMT() {
   const topic = document.getElementById('mt-topic').value.trim();
   if (!topic) { alert('กรุณากรอกหัวข้อ'); return; }
-  const newId = (state.morningTalks.length ? Math.max(...state.morningTalks.map(m=>m.id)) : 0) + 1;
-  state.morningTalks.push({ id: newId, date: document.getElementById('mt-date').value, branch: document.getElementById('mt-branch').value, topic, progress: document.getElementById('mt-prog').value, owner: state.currentUser?.display || '—', note: document.getElementById('mt-note').value.trim() });
+  if (state._editMTId) {
+    // แก้ไข
+    const m = state.morningTalks.find(x => x.id === state._editMTId);
+    if (m) {
+      m.date     = document.getElementById('mt-date').value;
+      m.branch   = document.getElementById('mt-branch').value;
+      m.topic    = topic;
+      m.progress = document.getElementById('mt-prog').value;
+      m.note     = document.getElementById('mt-note').value.trim();
+    }
+    state._editMTId = null;
+  } else {
+    // เพิ่มใหม่
+    const newId = (state.morningTalks.length ? Math.max(...state.morningTalks.map(m=>m.id)) : 0) + 1;
+    state.morningTalks.push({ id: newId, date: document.getElementById('mt-date').value, branch: document.getElementById('mt-branch').value, topic, progress: document.getElementById('mt-prog').value, owner: state.currentUser?.display || '—', note: document.getElementById('mt-note').value.trim() });
+  }
+  // reset modal title
+  const titleEl = document.querySelector('#modal-mt .modal-title');
+  if (titleEl) titleEl.textContent = 'บันทึก Morning Talk';
   saveState(); closeModal('modal-mt'); renderAll();
 }
 
@@ -1209,7 +1286,7 @@ function renderStaff() {
       <div class="member-avatar" style="background:${e.color}">${e.name.charAt(0)}</div>
       <div class="member-info">
         <div class="member-name">${e.name}</div>
-        <div class="member-role">${e.role === 'manager' ? '👑 ผู้จัดการ / หัวหน้า' : '👤 พนักงาน'} · รหัสผ่าน: ${isManager ? e.pass : '••••'}</div>
+        <div class="member-role">${e.role === 'manager' ? '👑 ผู้จัดการ / หัวหน้า' : '👤 พนักงาน'} · ${e.email ? '📧 '+e.email : 'ยังไม่มีอีเมล'}</div>
       </div>
       ${isManager ? `<div style="display:flex;gap:6px">
         <button class="btn btn-sm btn-outline" onclick="openEditStaff(${e.id})" style="padding:6px 10px">✏️</button>
@@ -1223,9 +1300,10 @@ function openAddStaff() {
   if (state.currentUser?.role !== 'manager') { alert('เฉพาะผู้จัดการเท่านั้นที่เพิ่มพนักงานได้'); return; }
   state.editStaffId = null;
   document.getElementById('modal-staff-title').textContent = 'เพิ่มพนักงาน';
-  document.getElementById('staff-name').value = '';
-  document.getElementById('staff-role').value = 'staff';
-  document.getElementById('staff-pass').value = '1234';
+  document.getElementById('staff-name').value  = '';
+  document.getElementById('staff-role').value  = 'staff';
+  document.getElementById('staff-pass').value  = '1234';
+  document.getElementById('staff-email').value = '';
   document.getElementById('staff-color').value = STAFF_COLORS[state.employees.length % STAFF_COLORS.length];
   buildColorPicker(document.getElementById('staff-color').value);
   openModal('modal-staff');
@@ -1236,10 +1314,11 @@ function openEditStaff(id) {
   if (!e) return;
   state.editStaffId = id;
   document.getElementById('modal-staff-title').textContent = 'แก้ไขข้อมูลพนักงาน';
-  document.getElementById('staff-name').value = e.name;
-  document.getElementById('staff-role').value = e.role;
-  document.getElementById('staff-pass').value = e.pass;
+  document.getElementById('staff-name').value  = e.name;
+  document.getElementById('staff-role').value  = e.role;
+  document.getElementById('staff-pass').value  = e.pass;
   document.getElementById('staff-color').value = e.color;
+  document.getElementById('staff-email').value = e.email || '';
   buildColorPicker(e.color);
   openModal('modal-staff');
 }
@@ -1259,19 +1338,21 @@ function selectColor(c) {
 }
 
 function saveStaff() {
-  const name = document.getElementById('staff-name').value.trim();
-  const role = document.getElementById('staff-role').value;
-  const pass = document.getElementById('staff-pass').value.trim() || '1234';
+  const name  = document.getElementById('staff-name').value.trim();
+  const role  = document.getElementById('staff-role').value;
+  const pass  = document.getElementById('staff-pass').value.trim() || '1234';
   const color = document.getElementById('staff-color').value;
+  const email = document.getElementById('staff-email').value.trim();
   if (!name) { alert('กรุณากรอกชื่อพนักงาน'); return; }
   if (state.editStaffId) {
     const e = state.employees.find(x => x.id === state.editStaffId);
-    if (e) { e.name = name; e.role = role; e.pass = pass; e.color = color; }
+    if (e) { e.name = name; e.role = role; e.pass = pass; e.color = color; e.email = email; }
   } else {
     const newId = state.employees.length ? Math.max(...state.employees.map(e=>e.id)) + 1 : 1;
-    state.employees.push({ id: newId, name, role, pass, color });
+    state.employees.push({ id: newId, name, role, pass, color, email });
   }
   saveState(); closeModal('modal-staff'); renderAll();
+  syncEmployeesToSheet();
   showToast('✅ บันทึกข้อมูลพนักงานแล้ว');
 }
 
@@ -1292,32 +1373,41 @@ function addTaskToCalendar() {
   const t = state.tasks.find(x => x.id === state.editTaskId);
   if (!t || !t.due) { showToast('❌ ไม่พบวันที่ deadline'); return; }
 
-  // สร้าง event วันครบกำหนด (ทั้งวัน)
-  const due = t.due.replace(/-/g, '');
+  const due     = t.due.replace(/-/g, '');
   const nextDay = new Date(t.due + 'T00:00:00');
   nextDay.setDate(nextDay.getDate() + 1);
   const nextDayStr = nextDay.toISOString().split('T')[0].replace(/-/g, '');
 
-  const title = encodeURIComponent('📌 ครบกำหนด: ' + t.name);
-  const details = encodeURIComponent(
-    'งาน: ' + t.name + '\n' +
-    'ผู้รับผิดชอบ: ' + t.owner + '\n' +
-    'หมวดหมู่: ' + t.group + '\n' +
-    'ความคืบหน้า: ' + t.pct + '%\n' +
-    'สถานะ: ' + t.status
-  );
+  // ดึง email เจ้าของงาน
+  const emp      = state.employees.find(e => e.name === t.owner);
+  const empEmail = emp?.email || '';
 
-  // reminders: 1440 นาที = 1 วัน, 60 นาที = 1 ชั่วโมง
-  const url = 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
+  const title   = encodeURIComponent('📌 ครบกำหนด: ' + t.name);
+  const details = encodeURIComponent([
+    'งาน: '         + t.name,
+    'ผู้รับผิดชอบ: ' + t.owner,
+    'หมวดหมู่: '     + (t.group || '-'),
+    'ความคืบหน้า: '  + t.pct + '%',
+    'สถานะ: '        + t.status,
+    empEmail ? 'อีเมล: ' + empEmail : ''
+  ].filter(Boolean).join('\n'));
+
+  // สร้าง URL เปิด Google Calendar
+  // ถ้ามี email — เปิดด้วย authuser เพื่อให้เข้า account ที่ถูกต้อง
+  let url = 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
     '&text=' + title +
     '&dates=' + due + '/' + nextDayStr +
-    '&details=' + details +
-    '&recur=RRULE:FREQ=DAILY;COUNT=1' +
-    '&remind=1440' +
-    '&remind=60';
+    '&details=' + details;
+
+  if (empEmail) url += '&authuser=' + encodeURIComponent(empEmail);
 
   window.open(url, '_blank');
-  showToast('📅 เปิด Google Calendar แล้ว — ตั้งแจ้งเตือน 2 ครั้งด้วยนะครับ');
+
+  if (empEmail) {
+    showToast('📅 เปิด Calendar ของ ' + t.owner + ' (' + empEmail + ') แล้ว');
+  } else {
+    showToast('📅 เปิด Google Calendar แล้ว — ล็อกอินด้วย email ของ ' + t.owner + ' ก่อนนะครับ');
+  }
 }
 
 
@@ -1363,17 +1453,34 @@ async function testScriptUrl() {
 async function syncTaskToSheet(task, action) {
   if (!SCRIPT_URL) return;
   try {
-    const body = JSON.stringify({ action: action, task: task, id: task.id });
+    const u = state.currentUser;
+    const payload = {
+      action, task,
+      id: task.id,
+      userId: u?.id,
+      userName: u?.display,
+      userEmail: state.employees.find(e => e.id === u?.id)?.email || ''
+    };
     await fetch(SCRIPT_URL, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
-      body: body
+      body: JSON.stringify(payload)
     });
-    if (action === 'addTask') showToast('📅 ส่งไป Google Sheet & Calendar แล้ว');
-  } catch(e) {
-    console.warn('Sync error:', e.message);
-  }
+    if (action === 'addTask') showToast('📅 บันทึกไป Google Sheet & Calendar แล้ว');
+  } catch(e) { console.warn('Sync error:', e.message); }
+}
+
+// sync employees ไป Sheet (เรียกตอนบันทึกพนักงาน)
+async function syncEmployeesToSheet() {
+  if (!SCRIPT_URL) return;
+  try {
+    await fetch(SCRIPT_URL, {
+      method: 'POST', mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'saveEmployees', employees: state.employees })
+    });
+  } catch(e) {}
 }
 
 // ── sync งานทั้งหมดไป Sheet (ครั้งแรก) ──
@@ -1389,6 +1496,33 @@ async function syncAllTasksToSheet() {
     }
   }
   showToast('✅ Sync ' + count + ' งานไป Google Sheet เสร็จแล้ว');
+}
+
+
+// ═══════════════════════════════════════
+// MORNING TALK EDIT / DELETE
+// ═══════════════════════════════════════
+function openEditMT(id) {
+  const m = state.morningTalks.find(x => x.id === id);
+  if (!m) return;
+  state._editMTId = id;
+  document.getElementById('mt-date').value     = m.date;
+  document.getElementById('mt-branch').value   = m.branch;
+  document.getElementById('mt-topic').value    = m.topic;
+  document.getElementById('mt-prog').value     = m.progress;
+  document.getElementById('mt-note').value     = m.note || '';
+  // เปลี่ยน title modal
+  const titleEl = document.querySelector('#modal-mt .modal-title');
+  if (titleEl) titleEl.textContent = 'แก้ไข Morning Talk';
+  openModal('modal-mt');
+}
+
+function deleteMT(id) {
+  if (!confirm('ลบรายการ Morning Talk นี้?')) return;
+  state.morningTalks = state.morningTalks.filter(x => x.id !== id);
+  saveState();
+  renderAll();
+  showToast('🗑 ลบ Morning Talk แล้ว');
 }
 
 </script>
