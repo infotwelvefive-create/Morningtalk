@@ -967,15 +967,19 @@ function openTaskDetail(id) {
   openModal('modal-detail');
   // render ปุ่ม calendar พร้อมแสดง email เจ้าของงาน
   const emp = state.employees.find(e => e.name === t.owner);
-  const empEmail = emp?.email || '';
+  const empEmail = emp ? (emp.email || '') : '';
   const calWrap = document.getElementById('cal-btn-wrap');
   if (calWrap) {
-    calWrap.innerHTML = `
-      <button onclick="addTaskToCalendar()" style="width:100%;padding:11px;background:#1D9E75;color:white;border:none;border-radius:10px;font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
-        📅 เพิ่มใน Google Calendar ของ ${t.owner}
-      </button>
-      ${empEmail ? `<div style="text-align:center;font-size:12px;color:var(--text3);margin-top:5px">📧 ${empEmail}</div>` : '<div style="text-align:center;font-size:12px;color:var(--amber);margin-top:5px">⚠️ ยังไม่มีอีเมล — เพิ่มได้ที่แท็บ 👤 พนักงาน</div>'}
-    `;
+    calWrap.innerHTML = '';
+    const btn = document.createElement('button');
+    btn.onclick = addTaskToCalendar;
+    btn.textContent = '📅 เพิ่มใน Google Calendar ของ ' + t.owner;
+    btn.setAttribute('style', 'width:100%;padding:11px;background:#1D9E75;color:white;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px');
+    calWrap.appendChild(btn);
+    const hint = document.createElement('div');
+    hint.setAttribute('style', 'text-align:center;font-size:12px;margin-top:5px;color:' + (empEmail ? 'var(--text3)' : 'var(--amber)'));
+    hint.textContent = empEmail ? ('📧 ' + empEmail) : '⚠️ ยังไม่มีอีเมล — เพิ่มได้ที่แท็บ 👤 พนักงาน';
+    calWrap.appendChild(hint);
   }
 }
 
@@ -1281,19 +1285,19 @@ function renderStaff() {
   if (!el) return;
   if (!state.employees.length) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">👤</div>ยังไม่มีพนักงาน</div>'; return; }
   const isManager = state.currentUser?.role === 'manager';
-  el.innerHTML = state.employees.map(e => `
-    <div class="member-row" style="cursor:default">
-      <div class="member-avatar" style="background:${e.color}">${e.name.charAt(0)}</div>
-      <div class="member-info">
-        <div class="member-name">${e.name}</div>
-        <div class="member-role">${e.role === 'manager' ? '👑 ผู้จัดการ / หัวหน้า' : '👤 พนักงาน'} · ${e.email ? '📧 '+e.email : 'ยังไม่มีอีเมล'}</div>
-      </div>
-      ${isManager ? `<div style="display:flex;gap:6px">
-        <button class="btn btn-sm btn-outline" onclick="openEditStaff(${e.id})" style="padding:6px 10px">✏️</button>
-        <button class="btn btn-sm" onclick="deleteStaff(${e.id})" style="padding:6px 10px;background:var(--red)">🗑</button>
-      </div>` : ''}
-    </div>
-  `).join('');
+  el.innerHTML = state.employees.map(e => {
+    const roleLabel = e.role === 'manager' ? '👑 ผู้จัดการ / หัวหน้า' : '👤 พนักงาน';
+    const emailLabel = e.email ? '📧 ' + e.email : 'ยังไม่มีอีเมล';
+    const editBtns = isManager
+      ? '<div style="display:flex;gap:6px"><button class="btn btn-sm btn-outline" onclick="openEditStaff(' + e.id + ')" style="padding:6px 10px">✏️</button><button class="btn btn-sm" onclick="deleteStaff(' + e.id + ')" style="padding:6px 10px;background:var(--red)">🗑</button></div>'
+      : '';
+    return '<div class="member-row" style="cursor:default">'
+      + '<div class="member-avatar" style="background:' + e.color + '">' + e.name.charAt(0) + '</div>'
+      + '<div class="member-info">'
+      + '<div class="member-name">' + e.name + '</div>'
+      + '<div class="member-role">' + roleLabel + ' · ' + emailLabel + '</div>'
+      + '</div>' + editBtns + '</div>';
+  }).join('');
 }
 
 function openAddStaff() {
